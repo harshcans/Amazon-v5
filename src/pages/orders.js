@@ -1,88 +1,59 @@
-import Header from "../components/Header";
-import { useSession, getSession } from "next-auth/react";
 import moment from "moment";
-import db from "../../firebase";
-import Order from "../components/Order";
 
-function Orders({ orders }) {
-  const { data: session } = useSession(); // ✅ fixed
+function Order({ id, amount, amountShipping, images, timestamp, items }) {
+  const Currency = ({ quantity, currency = "USD" }) => {
+    const formatted = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+    }).format(quantity);
+
+    return <span>{formatted}</span>;
+  };
 
   return (
-    <div>
-      <Header />
-      <main className="max-w-screen-lg mx-auto p-10">
-        <div className="flex items-center border-b mb-2 pb-1 border-yellow-300">
-          <h1 className="text-3xl">Your Orders</h1>
-          {session && (
-            <h5 className="ml-2">(Refresh the page to get recent orders)</h5>
-          )}
+    <div className="relative border">
+      <div className="flex item-center space-x-10 p-5 bg-gray-100 text-sm text-gray-600">
+        <div className="font-bold text-xs">
+          <p>ORDER PLACED</p>
+          <p>
+            {timestamp
+              ? moment.unix(timestamp.seconds || timestamp).format("DD MM YYYY")
+              : "N/A"}
+          </p>
         </div>
 
-        {session ? (
-          <h2>{orders.length} Orders</h2>
-        ) : (
-          <h2>Please sign in to see your orders</h2>
-        )}
+        <div>
+          <p className="text-xs font-bold">TOTAL</p>
+          <p>
+            <Currency quantity={amount} currency="USD" /> - Next Day Delivery&nbsp;
+            <Currency quantity={amountShipping} currency="USD" />
+          </p>
+        </div>
 
-        <div className="mt-5 space-y-4">
-          {orders?.map(
-            ({ id, amount, amountShipping, images, timestamp, items }) => (
-              <Order
-                key={id}
-                id={id}
-                amount={amount}
-                images={images}
-                amountShipping={amountShipping}
-                timestamp={timestamp}
-                items={items}
+        <p className="text-sm whitespace-nowrap sm:text-xl self-end flex-1 text-right text-blue-500">
+          {items?.length || 0} items
+        </p>
+
+        <p className="absolute top-2 right-2 w-40 lg:w-72 truncate text-xs whitespace-nowrap">
+          ORDER # {id}
+        </p>
+      </div>
+
+      <div className="p-5 sm:p-10">
+        <div className="flex space-x-6 overflow-x-auto">
+          {Array.isArray(images) &&
+            images.map((image, i) => (
+              <img
+                key={i}
+                src={image}
+                alt={`product-${i}`}
+                className="h-20 object-contain sm:h-32"
               />
-            )
-          )}
+            ))}
         </div>
-      </main>
+      </div>
     </div>
   );
 }
 
-export default Orders;
-
-export async function getServerSideProps(context) {
-  const session = await getSession(context); // ✅ keep only once
-
-  if (!session) {
-    return { props: {} };
-  }
-
-  const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-
-  // Get orders from Firestore
-  const stripeOrders = await db
-    .collection("next-amazon-users")
-    .doc(session.user.email)
-    .collection("orders")
-    .orderBy("timestamp", "desc")
-    .get();
-
-  // Attach Stripe line items to each order
-  const orders = await Promise.all(
-    stripeOrders.docs.map(async (order) => ({
-      id: order.id,
-      amount: order.data().amount,
-      amountShipping: order.data().amount_shipping,
-      images: order.data().images,
-      timestamp: moment(order.data().timestamp.toDate()).unix(),
-      items: (
-        await stripe.checkout.sessions.listLineItems(order.id, {
-          limit: 100,
-        })
-      ).data,
-    }))
-  );
-
-  return {
-    props: {
-      orders,
-      session, // ✅ pass only one session prop
-    },
-  };
-}
+export default Order;

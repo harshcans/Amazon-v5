@@ -1,3 +1,5 @@
+// pages/orders.js
+
 import Header from "../components/Header";
 import { useSession, getSession } from "next-auth/react";
 import moment from "moment";
@@ -5,7 +7,7 @@ import db from "../../firebase";
 import Order from "../components/Order";
 
 function Orders({ orders }) {
-  const { data: session } = useSession(); // ✅ fixed
+  const { data: session } = useSession();
 
   return (
     <div>
@@ -47,15 +49,15 @@ function Orders({ orders }) {
 export default Orders;
 
 export async function getServerSideProps(context) {
-  const session = await getSession(context); // ✅ keep only once
+  const session = await getSession(context);
 
   if (!session) {
-    return { props: {} };
+    return { props: { orders: [] } }; // ✅ safe fallback
   }
 
   const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-  // Get orders from Firestore
+  // Get user’s Firestore orders
   const stripeOrders = await db
     .collection("next-amazon-users")
     .doc(session.user.email)
@@ -63,26 +65,43 @@ export async function getServerSideProps(context) {
     .orderBy("timestamp", "desc")
     .get();
 
-  // Attach Stripe line items to each order
+  // Attach Stripe line items
   const orders = await Promise.all(
-    stripeOrders.docs.map(async (order) => ({
-      id: order.id,
-      amount: order.data().amount,
-      amountShipping: order.data().amount_shipping,
-      images: order.data().images,
-      timestamp: moment(order.data().timestamp.toDate()).unix(),
-      items: (
-        await stripe.checkout.sessions.listLineItems(order.id, {
-          limit: 100,
-        })
-      ).data,
-    }))
+    stripeOrders.docs.map(async (order) => {
+      const data = order.data();
+
+      // ✅ Ensure timestamp works whether it's Firestore Timestamp or UNIX
+      const ts = data.timestamp?.toDate
+        ? moment(data.timestamp.toDate()).unix()
+        : data.timestamp;
+
+      // ✅ Ensure we use Stripe Checkout Session ID for fetching items
+      const sessionId = data.id || order.id; // store Stripe session.id in Firestore at order creation
+
+      let lineItems = [];
+      try {
+        lineItems = (
+          await stripe.checkout.sessions.listLineItems(sessionId, { limit: 100 })
+        ).data;
+      } catch (err) {
+        console.error("Error fetching line items for order:", sessionId, err);
+      }
+
+      return {
+        id: order.id,
+        amount: data.amount,
+        amountShipping: data.amount_shipping,
+        images: data.images,
+        timestamp: ts,
+        items: lineItems,
+      };
+    })
   );
 
   return {
     props: {
       orders,
-      session, // ✅ pass only one session prop
+      session,
     },
   };
 }

@@ -1,12 +1,10 @@
-// pages/orders.js
-
 import Header from "../components/Header";
 import { useSession, getSession } from "next-auth/react";
 import moment from "moment";
 import db from "../../firebase";
 import Order from "../components/Order";
 
-function Orders({ orders }) {
+function Orders({ orders = [] }) {
   const { data: session } = useSession();
 
   return (
@@ -27,18 +25,22 @@ function Orders({ orders }) {
         )}
 
         <div className="mt-5 space-y-4">
-          {orders?.map(
-            ({ id, amount, amountShipping, images, timestamp, items }) => (
-              <Order
-                key={id}
-                id={id}
-                amount={amount}
-                images={images}
-                amountShipping={amountShipping}
-                timestamp={timestamp}
-                items={items}
-              />
+          {orders.length > 0 ? (
+            orders.map(
+              ({ id, amount, amountShipping, images, timestamp, items }) => (
+                <Order
+                  key={id}
+                  id={id}
+                  amount={amount}
+                  images={images}
+                  amountShipping={amountShipping}
+                  timestamp={timestamp}
+                  items={items}
+                />
+              )
             )
+          ) : (
+            <p className="text-gray-500">No orders found.</p>
           )}
         </div>
       </main>
@@ -52,56 +54,55 @@ export async function getServerSideProps(context) {
   const session = await getSession(context);
 
   if (!session) {
-    return { props: { orders: [] } }; // ✅ safe fallback
+    return { props: { orders: [] } };
   }
 
   const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-  // Get user’s Firestore orders
-  const stripeOrders = await db
-    .collection("next-amazon-users")
-    .doc(session.user.email)
-    .collection("orders")
-    .orderBy("timestamp", "desc")
-    .get();
+  let orders = [];
 
-  // Attach Stripe line items
-  const orders = await Promise.all(
-    stripeOrders.docs.map(async (order) => {
-      const data = order.data();
+  try {
+    const stripeOrders = await db
+      .collection("next-amazon-users")
+      .doc(session.user.email)
+      .collection("orders")
+      .orderBy("timestamp", "desc")
+      .get();
 
-      // ✅ Ensure timestamp works whether it's Firestore Timestamp or UNIX
-      const ts = data.timestamp?.toDate
-        ? moment(data.timestamp.toDate()).unix()
-        : data.timestamp;
+    orders = await Promise.all(
+      stripeOrders.docs.map(async (order) => {
+        const data = order.data();
 
-      // ✅ Ensure we use Stripe Checkout Session ID for fetching items
-      const sessionId = data.id || order.id; // store Stripe session.id in Firestore at order creation
+        const ts = data.timestamp?.toDate
+          ? moment(data.timestamp.toDate()).unix()
+          : 0;
 
-      let lineItems = [];
-      try {
-        lineItems = (
-          await stripe.checkout.sessions.listLineItems(sessionId, { limit: 100 })
-        ).data;
-      } catch (err) {
-        console.error("Error fetching line items for order:", sessionId, err);
-      }
+        let lineItems = [];
+        try {
+          if (data.id) {
+            lineItems = (
+              await stripe.checkout.sessions.listLineItems(data.id, { limit: 100 })
+            ).data;
+          }
+        } catch (err) {
+          console.error("Stripe error:", err.message);
+        }
 
-      return {
-        id: order.id,
-        amount: data.amount,
-        amountShipping: data.amount_shipping,
-        images: data.images,
-        timestamp: ts,
-        items: lineItems,
-      };
-    })
-  );
+        return {
+          id: order.id,
+          amount: data.amount || 0,
+          amountShipping: data.amount_shipping || 0,
+          images: data.images || [],
+          timestamp: ts,
+          items: lineItems,
+        };
+      })
+    );
+  } catch (err) {
+    console.error("Error loading orders:", err.message);
+  }
 
   return {
-    props: {
-      orders,
-      session,
-    },
+    props: { orders, session },
   };
 }

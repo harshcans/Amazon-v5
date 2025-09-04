@@ -3,93 +3,124 @@ import { buffer } from "micro";
 import * as admin from "firebase-admin";
 import Stripe from "stripe";
 
-// ✅ Initialize Firebase Admin (singleton)
+/* ----------------------------
+ 🔹 Firebase Admin Initialization
+----------------------------- */
 if (!admin.apps.length) {
-  const serviceAccount = JSON.parse(
-    Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_KEY, "base64").toString()
-  );
+  try {
+    const serviceAccount = JSON.parse(
+      Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_KEY, "base64").toString()
+    );
 
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
+
+    console.log("✅ Firebase Admin initialized");
+  } catch (err) {
+    console.error("❌ Firebase Admin initialization failed:", err.message);
+  }
 }
 
 const db = admin.firestore();
 
-// ✅ Initialize Stripe
+/* ----------------------------
+ 🔹 Stripe Initialization
+----------------------------- */
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2023-10-16",
 });
 
 const endpointSecret = process.env.STRIPE_SIGNING_SECRET;
 
-// 🔹 Save order into Firestore
+/* ----------------------------
+ 🔹 Save Order to Firestore
+----------------------------- */
 const fulfillOrder = async (session) => {
-  console.log("🔔 Fulfilling order:", session.id);
+  console.log("🔔 Attempting to fulfill order:", session.id);
 
-  return db
-    .collection("next-amazon-users")
-    .doc(session.metadata.email)
-    .collection("orders")
-    .doc(session.id)
-    .set({
-      id: session.id,
-      amount: session.amount_total / 100,
-      amount_shipping: session.total_details?.amount_shipping / 100 || 0,
-      images: JSON.parse(session.metadata.images || "[]"),
-      email: session.metadata.email,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-    })
-    .then(() => {
-      console.log(`✅ SUCCESS: Order ${session.id} added to Firestore`);
-    })
-    .catch((err) => {
-      console.error("❌ Firestore insertion error:", err.message);
-      throw new Error(err.message);
-    });
+  const metadata = session.metadata || {};
+  const images = metadata.images ? JSON.parse(metadata.images) : [];
+
+  const orderData = {
+    id: session.id,
+    amount: (session.amount_total ?? 0) / 100,
+    amount_shipping: (session.total_details?.amount_shipping ?? 0) / 100,
+    images,
+    email: metadata.email || "unknown",
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  try {
+    await db
+      .collection("next-amazon-users")
+      .doc(orderData.email)
+      .collection("orders")
+      .doc(orderData.id)
+      .set(orderData);
+
+    console.log(`✅ SUCCESS: Order ${orderData.id} written to Firestore`);
+  } catch (err) {
+    console.error(`❌ Firestore insertion failed for ${orderData.id}:`, err.message);
+    throw err;
+  }
 };
 
+/* ----------------------------
+ 🔹 Webhook Handler
+----------------------------- */
 export default async function handler(req, res) {
-  if (req.method === "POST") {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+    return res.status(405).end("Method Not Allowed");
+  }
+
+  let event;
+
+  try {
     const buf = await buffer(req);
     const sig = req.headers["stripe-signature"];
 
-    let event;
+    // Verify signature
+    event = stripe.webhooks.constructEvent(buf, sig, endpointSecret);
+    console.log(`📩 Received Stripe event: ${event.type} (${event.id})`);
+  } catch (err) {
+    console.error("⚠️ Webhook signature verification failed:", err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
 
-    // ✅ Verify Stripe event signature
-    try {
-      event = stripe.webhooks.constructEvent(buf, sig, endpointSecret);
-    } catch (err) {
-      console.error("⚠️ Webhook signature verification failed:", err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
+  try {
+    switch (event.type) {
+      case "checkout.session.completed":
+        await fulfillOrder(event.data.object);
+        break;
+
+      // Example: Expand in future
+      case "payment_intent.succeeded":
+        console.log(`💰 PaymentIntent succeeded: ${event.id}`);
+        break;
+
+      case "payment_intent.payment_failed":
+        console.warn(`❌ Payment failed: ${event.id}`);
+        break;
+
+      default:
+        console.log(`🤷 Unhandled event type: ${event.type}`);
     }
 
-    // ✅ Handle checkout session completed
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-
-      try {
-        await fulfillOrder(session);
-        return res.status(200).end();
-      } catch (err) {
-        console.error("⚠️ Webhook Fulfill Error:", err.message);
-        return res.status(400).send(`Webhook Error: ${err.message}`);
-      }
-    } else {
-      console.log(`Unhandled event type: ${event.type}`);
-    }
-
-    res.json({ received: true });
-  } else {
-    res.setHeader("Allow", "POST");
-    res.status(405).end("Method Not Allowed");
+    return res.status(200).json({ received: true });
+  } catch (err) {
+    console.error(`⚠️ Error processing event ${event.id}:`, err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 }
 
-// ✅ Required by Next.js API routes (for raw body parsing)
+/* ----------------------------
+ 🔹 Next.js API Config
+----------------------------- */
 export const config = {
   api: {
-    bodyParser: false,
+    bodyParser: false, // Needed for Stripe raw body
     externalResolver: true,
   },
 };

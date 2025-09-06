@@ -1,8 +1,8 @@
 // firebase.js
-
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 
+// ✅ Your Firebase client-side config (from Firebase Console → Project Settings → Web App)
 const firebaseConfig = {
   apiKey: "AIzaSyCSJwXZnmE9jOY3jQjhHr1uOaIvPDigXnY",
   authDomain: "blogcans-afea5.firebaseapp.com",
@@ -13,10 +13,9 @@ const firebaseConfig = {
   measurementId: "G-CVFNQPXJ0J"
 };
 
-// Initialize Firebase
-const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-// Get Firestore instance
+// ✅ Initialize only once
+const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 const db = getFirestore(app);
 
-export default db;
+export { db };

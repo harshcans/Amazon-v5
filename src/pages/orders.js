@@ -2,6 +2,13 @@ import Header from "../components/Header";
 import { useSession, getSession } from "next-auth/react";
 import moment from "moment";
 import { db } from "../../firebase";
+import {
+  collection,
+  doc,
+  getDocs,
+  orderBy,
+  query
+} from "firebase/firestore";
 import Order from "../components/Order";
 
 function Orders({ orders = [] }) {
@@ -54,55 +61,42 @@ export async function getServerSideProps(context) {
   const session = await getSession(context);
 
   if (!session) {
-    return { props: { orders: [] } };
+    return { props: {} };
   }
 
   const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-  let orders = [];
+  // 🔥 Convert to v9 Modular Syntax  
+  const ordersRef = collection(
+    db,
+    "next-amazon-users",
+    session.user.email,
+    "orders"
+  );
 
-  try {
-    const stripeOrders = await db
-      .collection("next-amazon-users")
-      .doc(session.user.email)
-      .collection("orders")
-      .orderBy("timestamp", "desc")
-      .get();
+  const q = query(ordersRef, orderBy("timestamp", "desc"));
+  const snapshot = await getDocs(q);
 
-    orders = await Promise.all(
-      stripeOrders.docs.map(async (order) => {
-        const data = order.data();
-
-        const ts = data.timestamp?.toDate
-          ? moment(data.timestamp.toDate()).unix()
-          : 0;
-
-        let lineItems = [];
-        try {
-          if (data.id) {
-            lineItems = (
-              await stripe.checkout.sessions.listLineItems(data.id, { limit: 100 })
-            ).data;
-          }
-        } catch (err) {
-          console.error("Stripe error:", err.message);
-        }
-
-        return {
-          id: order.id,
-          amount: data.amount || 0,
-          amountShipping: data.amount_shipping || 0,
-          images: data.images || [],
-          timestamp: ts,
-          items: lineItems,
-        };
-      })
-    );
-  } catch (err) {
-    console.error("Error loading orders:", err.message);
-  }
+  // 🔥 Fetch line items for each Stripe order
+  const orders = await Promise.all(
+    snapshot.docs.map(async (order) => ({
+      id: order.id,
+      amount: order.data().amount,
+      amountShipping: order.data().amount_shipping,
+      images: order.data().images,
+      timestamp: moment(order.data().timestamp.toDate()).unix(),
+      items: (
+        await stripe.checkout.sessions.listLineItems(order.id, {
+          limit: 100,
+        })
+      ).data,
+    }))
+  );
 
   return {
-    props: { orders, session },
+    props: {
+      orders,
+      session,
+    },
   };
 }

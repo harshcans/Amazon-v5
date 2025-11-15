@@ -152,7 +152,7 @@ export default ProductPage;
 // ------------------------
 
 import { doc, getDoc } from "firebase/firestore";
-import { db } from "../../firebase";
+import { db } from "../../../firebase";
 
 // Runs on every request
 export async function getServerSideProps({ params }) {
